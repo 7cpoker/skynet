@@ -4,7 +4,6 @@
 #include "socket_poll.h"
 #include "atomic.h"
 #include "spinlock.h"
-#include "skynet.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -68,11 +67,12 @@ struct write_buffer {
 	char *ptr;
 	size_t sz;
 	bool userobject;
-	uint8_t udp_address[UDP_ADDRESS_SIZE];
 };
 
-#define SIZEOF_TCPBUFFER (offsetof(struct write_buffer, udp_address[0]))
-#define SIZEOF_UDPBUFFER (sizeof(struct write_buffer))
+struct write_buffer_udp {
+	struct write_buffer buffer;
+	uint8_t udp_address[UDP_ADDRESS_SIZE];
+};
 
 struct wb_list {
 	struct write_buffer * head;
@@ -307,13 +307,13 @@ static inline void
 send_object_init_from_sendbuffer(struct socket_server *ss, struct send_object *so, struct socket_sendbuffer *buf) {
 	switch (buf->type) {
 	case SOCKET_BUFFER_MEMORY:
-		send_object_init(ss, so, (void *)buf->buffer, buf->sz);
+		send_object_init(ss, so, buf->buffer, buf->sz);
 		break;
 	case SOCKET_BUFFER_OBJECT:
-		send_object_init(ss, so, (void *)buf->buffer, USEROBJECT);
+		send_object_init(ss, so, buf->buffer, USEROBJECT);
 		break;
 	case SOCKET_BUFFER_RAWPOINTER:
-		so->buffer = (void *)buf->buffer;
+		so->buffer = buf->buffer;
 		so->sz = buf->sz;
 		so->free_func = dummy_free;
 		break;
@@ -445,7 +445,7 @@ free_buffer(struct socket_server *ss, struct socket_sendbuffer *buf) {
 	void *buffer = (void *)buf->buffer;
 	switch (buf->type) {
 	case SOCKET_BUFFER_MEMORY:
-		FREE((void *)buffer);
+		FREE(buffer);
 		break;
 	case SOCKET_BUFFER_OBJECT:
 		ss->soi.free(buffer);
@@ -646,7 +646,6 @@ open_socket(struct socket_server *ss, struct request_open * request, struct sock
 
 	ns = new_fd(ss, id, sock, PROTOCOL_TCP, request->opaque, true);
 	if (ns == NULL) {
-		close(sock);
 		result->data = "reach skynet socket number limit";
 		goto _failed;
 	}
@@ -661,19 +660,21 @@ open_socket(struct socket_server *ss, struct request_open * request, struct sock
 		freeaddrinfo( ai_list );
 		return SOCKET_OPEN;
 	} else {
-		ATOM_STORE(&ns->type , SOCKET_TYPE_CONNECTING);
 		if (enable_write(ss, ns, true)) {
 			result->data = "enable write failed";
 			goto _failed;
 		}
+		ATOM_STORE(&ns->type , SOCKET_TYPE_CONNECTING);
 	}
 
 	freeaddrinfo( ai_list );
 	return -1;
 _failed:
+	if (sock >= 0)
+		close(sock);
 	freeaddrinfo( ai_list );
 _failed_getaddrinfo:
-	ss->slot[HASH_ID(id)].type = SOCKET_TYPE_INVALID;
+	ATOM_STORE(&ss->slot[HASH_ID(id)].type, SOCKET_TYPE_INVALID);
 	return SOCKET_ERR;
 }
 
@@ -778,8 +779,9 @@ static int
 send_list_udp(struct socket_server *ss, struct socket *s, struct wb_list *list, struct socket_message *result) {
 	while (list->head) {
 		struct write_buffer * tmp = list->head;
+		struct write_buffer_udp * udp = (struct write_buffer_udp *)tmp;
 		union sockaddr_all sa;
-		socklen_t sasz = udp_socket_address(s, tmp->udp_address, &sa);
+		socklen_t sasz = udp_socket_address(s, udp->udp_address, &sa);
 		if (sasz == 0) {
 			skynet_error(NULL, "socket-server : udp (%d) type mismatch.", s->id);
 			drop_udp(ss, s, list, tmp);
@@ -921,7 +923,7 @@ send_buffer(struct socket_server *ss, struct socket *s, struct socket_lock *l, s
 		return -1;	// blocked by direct write, send later.
 	if (s->dw_buffer) {
 		// add direct write buffer before high.head
-		struct write_buffer * buf = MALLOC(SIZEOF_TCPBUFFER);
+		struct write_buffer * buf = MALLOC(sizeof(*buf));
 		struct send_object so;
 		buf->userobject = send_object_init(ss, &so, (void *)s->dw_buffer, s->dw_size);
 		buf->ptr = (char*)so.buffer+s->dw_offset;
@@ -966,20 +968,20 @@ append_sendbuffer_(struct socket_server *ss, struct wb_list *s, struct request_s
 static inline void
 append_sendbuffer_udp(struct socket_server *ss, struct socket *s, int priority, struct request_send * request, const uint8_t udp_address[UDP_ADDRESS_SIZE]) {
 	struct wb_list *wl = (priority == PRIORITY_HIGH) ? &s->high : &s->low;
-	struct write_buffer *buf = append_sendbuffer_(ss, wl, request, SIZEOF_UDPBUFFER);
+	struct write_buffer_udp *buf = (struct write_buffer_udp *)append_sendbuffer_(ss, wl, request, sizeof(*buf));
 	memcpy(buf->udp_address, udp_address, UDP_ADDRESS_SIZE);
-	s->wb_size += buf->sz;
+	s->wb_size += buf->buffer.sz;
 }
 
 static inline void
 append_sendbuffer(struct socket_server *ss, struct socket *s, struct request_send * request) {
-	struct write_buffer *buf = append_sendbuffer_(ss, &s->high, request, SIZEOF_TCPBUFFER);
+	struct write_buffer *buf = append_sendbuffer_(ss, &s->high, request, sizeof(*buf));
 	s->wb_size += buf->sz;
 }
 
 static inline void
 append_sendbuffer_low(struct socket_server *ss,struct socket *s, struct request_send * request) {
-	struct write_buffer *buf = append_sendbuffer_(ss, &s->low, request, SIZEOF_TCPBUFFER);
+	struct write_buffer *buf = append_sendbuffer_(ss, &s->low, request, sizeof(*buf));
 	s->wb_size += buf->sz;
 }
 
@@ -1485,14 +1487,13 @@ forward_message_udp(struct socket_server *ss, struct socket *s, struct socket_lo
 		switch(errno) {
 		case EINTR:
 		case AGAIN_WOULDBLOCK:
-			break;
-		default:
-			// close when error
-			force_close(ss, s, l, result);
-			result->data = strerror(errno);
-			return SOCKET_ERR;
+			return -1;
 		}
-		return -1;
+		int error = errno;
+		// close when error
+		force_close(ss, s, l, result);
+		result->data = strerror(error);
+		return SOCKET_ERR;
 	}
 	stat_read(ss,s,n);
 
@@ -1524,11 +1525,9 @@ report_connect(struct socket_server *ss, struct socket *s, struct socket_lock *l
 	socklen_t len = sizeof(error);  
 	int code = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &error, &len);  
 	if (code < 0 || error) {  
-		force_close(ss,s,l, result);
-		if (code >= 0)
-			result->data = strerror(error);
-		else
-			result->data = strerror(errno);
+		error = code < 0 ? errno : error;
+		force_close(ss, s, l, result);
+		result->data = strerror(error);
 		return SOCKET_ERR;
 	} else {
 		ATOM_STORE(&s->type , SOCKET_TYPE_CONNECTED);
@@ -1560,8 +1559,8 @@ static int
 getname(union sockaddr_all *u, char *buffer, size_t sz) {
 	char tmp[INET6_ADDRSTRLEN];
 	void * sin_addr = (u->s.sa_family == AF_INET) ? (void*)&u->v4.sin_addr : (void *)&u->v6.sin6_addr;
-	int sin_port = ntohs((u->s.sa_family == AF_INET) ? u->v4.sin_port : u->v6.sin6_port);
 	if (inet_ntop(u->s.sa_family, sin_addr, tmp, sizeof(tmp))) {
+		int sin_port = ntohs((u->s.sa_family == AF_INET) ? u->v4.sin_port : u->v6.sin6_port);
 		snprintf(buffer, sz, "%s:%d", tmp, sin_port);
 		return 1;
 	} else {
@@ -1753,8 +1752,9 @@ static void
 send_request(struct socket_server *ss, struct request_package *request, char type, int len) {
 	request->header[6] = (uint8_t)type;
 	request->header[7] = (uint8_t)len;
+	const char * req = (const char *)request + offsetof(struct request_package, header[6]);
 	for (;;) {
-		ssize_t n = write(ss->sendctrl_fd, &request->header[6], len+2);
+		ssize_t n = write(ss->sendctrl_fd, req, len+2);
 		if (n<0) {
 			if (errno != EINTR) {
 				skynet_error(NULL, "socket-server : send ctrl command error %s.", strerror(errno));
@@ -1849,8 +1849,6 @@ socket_server_send(struct socket_server *ss, struct socket_sendbuffer *buf) {
 			s->dw_offset = n;
 
 			socket_unlock(&l);
-
-			inc_sending_ref(s, id);
 
 			struct request_package request;
 			request.u.send.id = id;
