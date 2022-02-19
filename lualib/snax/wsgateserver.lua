@@ -7,6 +7,8 @@ local string = require "string"
 local crypt = require "skynet.crypt"
 local gateserver = {}
 
+local max_packsize = 10*1024
+local max_headersize = 1024
 local socket	-- listen socket
 local queue		-- message queue
 local maxclient	-- max client
@@ -22,16 +24,16 @@ local function parse_httpheader(http_str)
     local start = 0
     local str
     i = string.find(http_str, "\r\n", i+1)
-    while true  and i ~= nil do
-       start = i + 2
-       i = string.find(http_str, "\r\n", start)
-       if i ~= nil then
+	while true  and i ~= nil do
+		start = i + 2
+		i = string.find(http_str, "\r\n", start)
+		if i ~= nil then
             str = string.sub(http_str, start, i-1)
             local key, value = string.match(str, "([%a-]+)%s*: (.*)")
 	        if key ~= nil then
                 header[key:lower()] = value
-            end
-       end
+			end
+		end
     end
 
 	return header
@@ -114,7 +116,10 @@ end
 
 function gateserver.closeclient(fd)
 	local c = connection[fd]
+	print("gateserver.closeclien fd",fd,"client_number",client_number)
 	if c then
+		client_number = client_number - 1
+		print("gateserver.closeclien fd",fd,"client_number",client_number)
 		connection[fd] = nil
 		socketdriver.close(fd)
 	end
@@ -144,7 +149,7 @@ function gateserver.start(handler)
 		local port = assert(conf.port)
 		maxclient = conf.maxclient or 1024
 		nodelay = conf.nodelay
-		skynet.error(string.format("Listen on %s:%d", address, port))
+		skynet.error(string.format("Listen on %s:%d", address, port),maxclient)
 		socket = socketdriver.listen(address, port)
 		socketdriver.start(socket)
 		if handler.open then
@@ -163,14 +168,25 @@ function gateserver.start(handler)
 		if connection[fd] ~= nil and connection[fd].isconnect then
 			if connection[fd].iswebsocket_handeshake == 1 then
 				--websocket 握手回包处理
+				if sz >= max_headersize then
+					gateserver.closeclient(fd)
+					return
+				end
+
 				local str_msg = netpack.tostring(msg, sz)
 				local header = parse_httpheader(str_msg)
 				if (gateserver.checkwebsocket(fd, header)) then
 					connection[fd].iswebsocket_handeshake = 0
-				end								
-			else
-				handler.message(fd, msg, sz)
+				end
+				return								
 			end
+
+			if sz >= max_packsize then				
+				gateserver.closeclient(fd)
+				return
+			end
+			
+			handler.message(fd, msg, sz)			
 		else
 			skynet.error(string.format("Drop message from fd (%d) : %s", fd, netpack.tostring(msg,sz)))
 		end
@@ -206,6 +222,7 @@ function gateserver.start(handler)
 		connection[fd].isconnect = true
 		connection[fd].iswebsocket_handeshake = 1
 		client_number = client_number + 1
+		print("gateserver. open fd",fd,"client_number",client_number)
 		handler.connect(fd, msg)
 	end
 
@@ -214,6 +231,7 @@ function gateserver.start(handler)
 		if c ~= nil then
 			connection[fd] = nil
 			client_number = client_number - 1
+			print("gateserver. close_fd fd",fd,"client_number",client_number)
 		end
 	end
 
@@ -252,9 +270,9 @@ function gateserver.start(handler)
 		unpack = function ( msg, sz )
             local _, fd = socketdriver.unpack(msg, sz)
 			if (connection[fd] == nil ) then
-					return netpack.filter( queue, msg, sz, 1)
+				return netpack.filter( queue, msg, sz, 1)
 			elseif connection[fd].isconnect then
-					return netpack.filter( queue, msg, sz, connection[fd].iswebsocket_handeshake)
+				return netpack.filter( queue, msg, sz, connection[fd].iswebsocket_handeshake)
 			end
 			return netpack.filter( queue, msg, sz, 1)
 		end,
@@ -265,17 +283,17 @@ function gateserver.start(handler)
 			end
 		end
 	}
-
-     skynet.start(function()
-     skynet.dispatch("lua", function (_, address, cmd, ...)
-     local f = CMD[cmd]
-          if f then
-              skynet.ret(skynet.pack(f(address, ...)))
-          else
-              skynet.ret(skynet.pack(handler.command(cmd, address, ...)))
-          end
-        end)
-      end)
- end
+	
+	skynet.start(function()
+		skynet.dispatch("lua", function (_, address, cmd, ...)
+			local f = CMD[cmd]
+			if f then
+				skynet.ret(skynet.pack(f(address, ...)))
+			else
+				skynet.ret(skynet.pack(handler.command(cmd, address, ...)))
+			end
+		end)
+	end)
+end
 
 return gateserver
