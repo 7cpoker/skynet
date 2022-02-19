@@ -288,9 +288,13 @@ function gateserver.start(handler)
 		skynet.dispatch("lua", function (_, address, cmd, ...)
 			local f = CMD[cmd]
 			if f then
+				local trace_index = trace_log.trace("wsgateserver  f",os.clock(),trace_index)
 				skynet.ret(skynet.pack(f(address, ...)))
+				local trace_index = trace_log.trace("wsgateserver  f ",os.clock(),trace_index)
 			else
+				local trace_index = trace_log.trace("wsgateserver  nf",os.clock(),trace_index)
 				skynet.ret(skynet.pack(handler.command(cmd, address, ...)))
+				local trace_index = trace_log.trace("wsgateserver  nf",os.clock(),trace_index)
 			end
 		end)
 	end)
