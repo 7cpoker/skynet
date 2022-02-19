@@ -16,7 +16,7 @@ local client_number = 0
 local CMD = setmetatable({}, { __gc = function() netpack.clear(queue) end })
 local nodelay = false
 local connection = {}  --{ isconnect, iswebsocket_handeshake (default 1) }
-
+local check_v = 1
 -------------websocket 握手时解析http请求头--------------------------------
 local function parse_httpheader(http_str)
     local header = {}
@@ -283,18 +283,21 @@ function gateserver.start(handler)
 			end
 		end
 	}
-	
 	skynet.start(function()
 		skynet.dispatch("lua", function (_, address, cmd, ...)
 			local f = CMD[cmd]
 			if f then
-				local trace_index = trace_log.trace("wsgateserver  f",os.clock(),trace_index)
+				os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",inspect({string.format(os.date("%Y-%m-%d %H:%M:%S"), os.time())}),check_v,check_v.log))
 				skynet.ret(skynet.pack(f(address, ...)))
-				local trace_index = trace_log.trace("wsgateserver  f ",os.clock(),trace_index)
+				os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",inspect({string.format(os.date("%Y-%m-%d %H:%M:%S"), os.time())}),check_v,check_v.log))
 			else
-				local trace_index = trace_log.trace("wsgateserver  nf",os.clock(),trace_index)
+				os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",inspect({string.format(os.date("%Y-%m-%d %H:%M:%S"), os.time())}),check_v,check_v.log))
 				skynet.ret(skynet.pack(handler.command(cmd, address, ...)))
-				local trace_index = trace_log.trace("wsgateserver  nf",os.clock(),trace_index)
+				os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",inspect({string.format(os.date("%Y-%m-%d %H:%M:%S"), os.time())}),check_v,check_v.log))
+			end
+			check_v = check_v + 1
+			if check_v > 100000 then
+				check_v = 1
 			end
 		end)
 	end)
