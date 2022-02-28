@@ -35,7 +35,7 @@ function handler.connect(fd, addr)
 	}
 	connection[fd] = c
 	--skynet.send(watchdog, "lua", "socket", "open", fd, addr, "websocket")
-	forwarding[c.agent] = c
+	--forwarding[c.agent] = c
 	gateserver.openclient(fd)
 end
 
