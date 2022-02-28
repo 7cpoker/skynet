@@ -57,7 +57,7 @@ end
 
 function handler.disconnect(fd)
 	close_fd(fd)
-	--skynet.send(watchdog, "lua", "socket", "close", fd)
+	skynet.send(watchdog, "lua", "socket", "close", fd)
 end
 
 function handler.error(fd, msg)
