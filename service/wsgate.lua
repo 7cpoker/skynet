@@ -24,7 +24,7 @@ function handler.message(fd, msg, sz)
 	if agent then
 		skynet.redirect(agent, c.client, "client", fd, msg, sz)
 	else
-		--skynet.send(watchdog, "lua", "socket", "data", fd, netpack.tostring(msg, sz))
+		skynet.send(watchdog, "lua", "socket", "data", fd, netpack.tostring(msg, sz))
 	end
 end
 
@@ -35,8 +35,6 @@ function handler.connect(fd, addr)
 	}
 	connection[fd] = c
 	skynet.send(watchdog, "lua", "socket", "open", fd, addr, "websocket")
-	-- --forwarding[c.agent] = c
-	-- gateserver.openclient(fd)
 end
 
 local function unforward(c)
@@ -62,11 +60,11 @@ end
 
 function handler.error(fd, msg)
 	close_fd(fd)
-	--skynet.send(watchdog, "lua", "socket", "error", fd, msg)
+	skynet.send(watchdog, "lua", "socket", "error", fd, msg)
 end
 
 function handler.warning(fd, size)
-	--skynet.send(watchdog, "lua", "socket", "warning", fd, size)
+	skynet.send(watchdog, "lua", "socket", "warning", fd, size)
 end
 
 local CMD = {}
