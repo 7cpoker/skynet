@@ -159,6 +159,7 @@ function gateserver.start(handler)
 
 	function CMD.close()
 		assert(socket)
+		print(inspect(socket))
 		socketdriver.close(socket)
 	end
 
