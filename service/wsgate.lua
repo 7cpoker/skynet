@@ -62,7 +62,7 @@ end
 
 function handler.error(fd, msg)
 	close_fd(fd)
-	skynet.send(watchdog, "lua", "socket", "error", fd, msg)
+	--skynet.send(watchdog, "lua", "socket", "error", fd, msg)
 end
 
 function handler.warning(fd, size)

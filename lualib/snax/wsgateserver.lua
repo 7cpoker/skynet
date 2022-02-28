@@ -116,10 +116,10 @@ end
 
 function gateserver.closeclient(fd)
 	local c = connection[fd]
-	print("gateserver.closeclien fd",fd,"client_number",client_number)
+	skynet.error("gateserver.closeclien fd",fd,"client_number",client_number)
 	if c then
 		client_number = client_number - 1
-		print("gateserver.closeclien fd",fd,"client_number",client_number)
+		skynet.error("gateserver.closeclien fd",fd,"client_number",client_number)
 		connection[fd] = nil
 		socketdriver.close(fd)
 	end
@@ -159,7 +159,7 @@ function gateserver.start(handler)
 
 	function CMD.close()
 		assert(socket)
-		print(inspect(socket))
+		skynet.error(inspect(socket))
 		socketdriver.close(socket)
 	end
 
@@ -223,7 +223,7 @@ function gateserver.start(handler)
 		connection[fd].isconnect = true
 		connection[fd].iswebsocket_handeshake = 1
 		client_number = client_number + 1
-		print("gateserver. open fd",fd,"client_number",client_number)
+		skynet.error("gateserver. open fd",fd,"client_number",client_number)
 		handler.connect(fd, msg)
 	end
 
@@ -232,7 +232,7 @@ function gateserver.start(handler)
 		if c ~= nil then
 			connection[fd] = nil
 			client_number = client_number - 1
-			print("gateserver. close_fd fd",fd,"client_number",client_number)
+			skynet.error("gateserver. close_fd fd",fd,"client_number",client_number)
 		end
 	end
 
