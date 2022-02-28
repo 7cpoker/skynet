@@ -24,7 +24,7 @@ function handler.message(fd, msg, sz)
 	if agent then
 		skynet.redirect(agent, c.client, "client", fd, msg, sz)
 	else
-		skynet.send(watchdog, "lua", "socket", "data", fd, netpack.tostring(msg, sz))
+		--skynet.send(watchdog, "lua", "socket", "data", fd, netpack.tostring(msg, sz))
 	end
 end
 
@@ -57,7 +57,7 @@ end
 
 function handler.disconnect(fd)
 	close_fd(fd)
-	skynet.send(watchdog, "lua", "socket", "close", fd)
+	--skynet.send(watchdog, "lua", "socket", "close", fd)
 end
 
 function handler.error(fd, msg)
