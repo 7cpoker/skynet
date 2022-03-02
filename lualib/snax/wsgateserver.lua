@@ -121,6 +121,7 @@ function gateserver.closeclient(fd)
 		client_number = client_number - 1
 		print("gateserver.closeclien fd",fd,"client_number",client_number)
 		connection[fd] = nil
+		socketdriver.shutdown(fd)
 		socketdriver.close(fd)
 	end
 end
@@ -159,6 +160,7 @@ function gateserver.start(handler)
 
 	function CMD.close()
 		assert(socket)
+		socketdriver.shutdown(socket)
 		socketdriver.close(socket)
 	end
 
@@ -212,6 +214,7 @@ function gateserver.start(handler)
 
 	function MSG.open(fd, msg)
 		if client_number >= maxclient then
+			socketdriver.shutdown(fd)
 			socketdriver.close(fd)
 			return
 		end
@@ -248,6 +251,7 @@ function gateserver.start(handler)
 
 	function MSG.error(fd, msg)
 		if fd == socket then
+			socketdriver.shutdown(fd)
 			socketdriver.close(fd)
 			skynet.error(msg)
 		else
