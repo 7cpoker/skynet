@@ -89,7 +89,18 @@ function CMD.watchdog(source, _watchdog)
 	watchdog = _watchdog
 end
 
--- 这里的 agent 进房前是 watchdog 进房后是 房间地址
+function CMD.reforward(source, fd, client, address)
+	print("wsgate reforward",source, fd, client, address)
+	skynet.trace()
+	local c = connection[fd]
+	if c then
+		unforward(c)
+		c.client = client or 0
+		c.agent = address or source
+		forwarding[c.agent] = c
+	end
+end
+
 function CMD.forward(source, fd, client, address)
 	print("wsgate forward",source, fd, client, address)
 	skynet.trace()
