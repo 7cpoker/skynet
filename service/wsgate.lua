@@ -21,7 +21,7 @@ function handler.message(fd, msg, sz)
 	-- recv a package, forward it
 	local c = connection[fd]
 	local agent = c.agent
-	print("agent",agent,fd,inspect(msg),inspect(sz))
+	print("wsgate message agent",agent,fd,inspect(msg),inspect(sz))
 	if agent then
 		skynet.redirect(agent, c.client, "client", fd, msg, sz)
 	else
