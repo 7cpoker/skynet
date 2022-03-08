@@ -40,8 +40,6 @@ function handler.connect(fd, addr)
 	connection[fd] = c
 	skynet.send(watchdog, "lua", "socket", "open", fd, addr, "websocket")
 	--gateserver.openclient(fd)
-
-	print(inspect(connection))
 end
 
 local function unforward(c)
@@ -91,7 +89,6 @@ end
 
 function CMD.reforward(source, fd, client, address)
 	print("wsgate reforward",source, fd, client, address)
-	skynet.trace()
 	local c = connection[fd]
 	if c then
 		unforward(c)
@@ -103,7 +100,6 @@ end
 
 function CMD.forward(source, fd, client, address)
 	print("wsgate forward",source, fd, client, address)
-	skynet.trace()
 	local c = assert(connection[fd])
 	unforward(c)
 	c.client = client or 0
