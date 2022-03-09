@@ -21,17 +21,13 @@ function handler.message(fd, msg, sz)
 	-- recv a package, forward it
 	local c = connection[fd]
 	local agent = c.agent
-	print("wsgate message agent",agent,fd,inspect(msg),inspect(sz))
 	if agent then
 		skynet.redirect(agent, c.client, "client", fd, msg, sz)
 	else
 		skynet.send(watchdog or "watchdog", "lua", "socket", "data", fd, netpack.tostring(msg, sz))
-		-- print(watchdog, c.client or 0, "client", fd, msg, sz)
-		-- skynet.redirect(watchdog, c.client or 0, "client", fd, msg, sz)
 	end
 end
 
--- 发送给 watchdog
 function handler.connect(fd, addr)
 	local c = {
 		fd = fd,
@@ -39,7 +35,6 @@ function handler.connect(fd, addr)
 	}
 	connection[fd] = c
 	skynet.send(watchdog, "lua", "socket", "open", fd, addr, "websocket")
-	--gateserver.openclient(fd)
 end
 
 local function unforward(c)
@@ -53,7 +48,6 @@ end
 local function close_fd(fd)
 	local c = connection[fd]
 	if c then
-		print("wsgate close_fd", fd)
 		unforward(c)
 		connection[fd] = nil
 		gateserver.closeclient(fd)
@@ -62,7 +56,6 @@ local function close_fd(fd)
 end
 
 function handler.disconnect(fd)
-	print("wsgate disconnect", fd)
 	if close_fd(fd) then
 		skynet.send(watchdog, "lua", "socket", "close", fd)
 		gateserver.closeclient(fd)
@@ -83,12 +76,10 @@ end
 local CMD = {}
 
 function CMD.watchdog(source, _watchdog)
-	print(source, _watchdog)
 	watchdog = _watchdog
 end
 
 function CMD.reforward(source, fd, client, address)
-	print("wsgate reforward",source, fd, client, address)
 	local c = connection[fd]
 	if c then
 		unforward(c)
@@ -99,7 +90,6 @@ function CMD.reforward(source, fd, client, address)
 end
 
 function CMD.forward(source, fd, client, address)
-	print("wsgate forward",source, fd, client, address)
 	local c = assert(connection[fd])
 	unforward(c)
 	c.client = client or 0
@@ -117,7 +107,7 @@ end
 function CMD.kick(source, fd)
 	close_fd(fd)
 end
---逻辑 自己调自己
+
 function handler.command(cmd, source, ...)
 	local f = assert(CMD[cmd])
 	return f(source, ...)
