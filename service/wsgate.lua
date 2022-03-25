@@ -62,7 +62,6 @@ function handler.disconnect(fd)
 	end
 end
 
-
 function handler.error(fd, msg)
 	if close_fd(fd) then
 		skynet.send(watchdog, "lua", "socket", "error", fd)
@@ -82,6 +81,7 @@ end
 function CMD.reforward(source, fd, client, address)
 	local c = connection[fd]
 	if c then
+		--print("wsgate reforward",source, fd, client, address,c.agent )
 		unforward(c)
 		c.client = client or 0
 		c.agent = address or source
@@ -106,6 +106,11 @@ end
 
 function CMD.kick(source, fd)
 	close_fd(fd)
+end
+
+function CMD.check_send_time( source, ... )
+	print()
+	skynet.send(".check",'lua',"send",...)
 end
 
 function handler.command(cmd, source, ...)

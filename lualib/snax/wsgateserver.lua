@@ -16,7 +16,7 @@ local client_number = 0
 local CMD = setmetatable({}, { __gc = function() netpack.clear(queue) end })
 local nodelay = false
 local connection = {}  --{ isconnect, iswebsocket_handeshake (default 1) }
-check_v = 1
+
 -------------websocket 握手时解析http请求头--------------------------------
 local function parse_httpheader(http_str)
     local header = {}
@@ -116,10 +116,8 @@ end
 
 function gateserver.closeclient(fd)
 	local c = connection[fd]
-	print("gateserver.closeclien fd",fd,"client_number",client_number)
 	if c then
 		client_number = client_number - 1
-		print("gateserver.closeclien fd",fd,"client_number",client_number)
 		connection[fd] = nil
 		socketdriver.shutdown(fd)
 		socketdriver.close(fd)
@@ -160,7 +158,6 @@ function gateserver.start(handler)
 
 	function CMD.close()
 		assert(socket)
-		socketdriver.shutdown(socket)
 		socketdriver.close(socket)
 	end
 
@@ -214,7 +211,6 @@ function gateserver.start(handler)
 
 	function MSG.open(fd, msg)
 		if client_number >= maxclient then
-			socketdriver.shutdown(fd)
 			socketdriver.close(fd)
 			return
 		end
@@ -225,7 +221,6 @@ function gateserver.start(handler)
 		connection[fd].isconnect = true
 		connection[fd].iswebsocket_handeshake = 1
 		client_number = client_number + 1
-		print("gateserver. open fd",fd,"client_number",client_number)
 		handler.connect(fd, msg)
 	end
 
@@ -234,7 +229,6 @@ function gateserver.start(handler)
 		if c ~= nil then
 			connection[fd] = nil
 			client_number = client_number - 1
-			print("gateserver. close_fd fd",fd,"client_number",client_number)
 		end
 	end
 
@@ -251,7 +245,6 @@ function gateserver.start(handler)
 
 	function MSG.error(fd, msg)
 		if fd == socket then
-			socketdriver.shutdown(fd)
 			socketdriver.close(fd)
 			skynet.error(msg)
 		else
@@ -287,24 +280,19 @@ function gateserver.start(handler)
 			end
 		end
 	}
-	skynet.start(function()
-		skynet.dispatch("lua", function (_, address, cmd, ...)
-			local f = CMD[cmd]
-			if f then
-				--os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",string.format(os.date("%Y-%m-%d %H:%M:%S"),os.time()),check_v,'../../logs/'..GAME_NAME..'/'..svr_name..'check_v.log'))
-				skynet.ret(skynet.pack(f(address, ...)))
-				--os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",string.format(os.date("%Y-%m-%d %H:%M:%S"),os.time()),check_v,'../../logs/'..GAME_NAME..'/'..svr_name..'check_v.log'))
-			else
-				--os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",string.format(os.date("%Y-%m-%d %H:%M:%S"),os.time()),check_v,'../../logs/'..GAME_NAME..'/'..svr_name..'check_v.log'))
-				skynet.ret(skynet.pack(handler.command(cmd, address, ...)))
-				--os.execute(string.format("echo 'wsgateserver  f %s %d' >> %s",string.format(os.date("%Y-%m-%d %H:%M:%S"),os.time()),check_v,'../../logs/'..GAME_NAME..'/'..svr_name..'check_v.log'))
-			end
-			check_v = check_v + 1
-			if check_v > 100000 then
-				check_v = 1
-			end
-		end)
-	end)
-end
+
+     skynet.start(function()
+     skynet.dispatch("lua", function (_, address, cmd, ...)
+     local f = CMD[cmd]
+          if f then
+              skynet.ret(skynet.pack(f(address, ...)))
+          else
+              skynet.ret(skynet.pack(handler.command(cmd, address, ...)))
+          end
+        end)
+      end)
+
+     skynet.send(".check","lua","add",skynet.self())
+ end
 
 return gateserver
