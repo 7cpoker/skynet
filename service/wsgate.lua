@@ -109,8 +109,8 @@ function CMD.kick(source, fd)
 end
 
 function CMD.check_send_time( source, ... )
-	print()
-	skynet.send(".check",'lua',"send",...)
+	local res = { endless = skynet.stat("endless"), mqlen = skynet.stat("mqlen"), message = skynet.stat("message"), cpu = skynet.stat("cpu"),}
+	skynet.send(".check",'lua',"send",res,...)
 end
 
 function handler.command(cmd, source, ...)
