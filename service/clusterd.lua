@@ -5,6 +5,7 @@ local cluster = require "skynet.cluster.core"
 local config_name = skynet.getenv "cluster"
 local node_address = {}
 local node_sender = {}
+local node_sender_closed = {}
 local command = {}
 local config = {}
 local nodename = cluster.nodename()
@@ -56,17 +57,21 @@ local function open_channel(t, key)
 		if succ then
 			t[key] = c
 			ct.channel = c
+                        node_sender_closed[key] = nil
 		else
 			err = string.format("changenode [%s] (%s:%s) failed", key, host, port)
 		end
 	elseif address == false then
 		c = node_sender[key]
-		if c == nil then
-			-- no sender, always succ
+		if c == nil or node_sender_closed[key] then
+			-- no sender or closed, always succ
 			succ = true
 		else
 			-- trun off the sender
 			succ, err = pcall(skynet.call, c, "lua", "changenode", false)
+                        if succ then --trun off failed, wait next index todo turn off
+                                node_sender_closed[key] = true
+                        end
 		end
 	else
 		err = string.format("cluster node [%s] is absent.", key)
@@ -137,14 +142,19 @@ function command.reload(source, config)
 	skynet.ret(skynet.pack(nil))
 end
 
-function command.listen(source, addr, port)
+function command.listen(source, addr, port, maxclient)
 	local gate = skynet.newservice("gate")
 	if port == nil then
 		local address = assert(node_address[addr], addr .. " is down")
-		addr, port = string.match(address, "([^:]+):(.*)$")
+		addr, port = string.match(address, "(.+):([^:]+)$")
+		port = tonumber(port)
+		assert(port ~= 0)
+		skynet.call(gate, "lua", "open", { address = addr, port = port, maxclient = maxclient })
+		skynet.ret(skynet.pack(addr, port))
+	else
+		local realaddr, realport = skynet.call(gate, "lua", "open", { address = addr, port = port, maxclient = maxclient })
+		skynet.ret(skynet.pack(realaddr, realport))
 	end
-	skynet.call(gate, "lua", "open", { address = addr, port = port })
-	skynet.ret(skynet.pack(nil))
 end
 
 function command.sender(source, node)
@@ -202,6 +212,18 @@ function command.register(source, name, addr)
 	register_name[name] = addr
 	skynet.ret(nil)
 	skynet.error(string.format("Register [%s] :%08x", name, addr))
+end
+
+function command.unregister(_, name)
+	if not register_name[name] then
+		return skynet.ret(nil)
+	end
+	local addr = register_name[name]
+	register_name[addr] = nil
+	register_name[name] = nil
+	clearnamecache()
+	skynet.ret(nil)
+	skynet.error(string.format("Unregister [%s] :%08x", name, addr))
 end
 
 function command.queryname(source, name)

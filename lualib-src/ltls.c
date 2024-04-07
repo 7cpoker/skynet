@@ -219,14 +219,17 @@ _ltls_context_read(lua_State* L) {
 
     do {
         read = SSL_read(tls_p->ssl, outbuff, sizeof(outbuff));
-        if(read <= 0) {
+        if(read < 0) {
             int err = SSL_get_error(tls_p->ssl, read);
             ERR_clear_error();
             if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
                 break;
             }
             luaL_error(L, "SSL_read error:%d", err);
-        }else if(read <= sizeof(outbuff)) {
+        }else if(read == 0){
+            break;
+        }
+        else if(read <= sizeof(outbuff)) {
             luaL_addlstring(&b, outbuff, read);
         }else {
             luaL_error(L, "invalid SSL_read:%d", read);
@@ -408,7 +411,9 @@ ltls_init_constructor(lua_State* L) {
     if(!TLS_IS_INIT) {
         SSL_library_init();
         SSL_load_error_strings();
+#if OPENSSL_VERSION_NUMBER < 0x30000000L
         ERR_load_BIO_strings();
+#endif
         OpenSSL_add_all_algorithms();
     }
 #endif

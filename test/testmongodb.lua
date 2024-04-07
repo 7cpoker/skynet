@@ -7,6 +7,11 @@ if port then
 	port = math.tointeger(port)
 end
 
+host = '127.0.0.1'
+port = 27017
+username = "admin"
+password = 123456
+db_name = "admin"
 -- print(host, port, db_name, username, password)
 
 local function _create_client()
@@ -14,12 +19,12 @@ local function _create_client()
 		{
 			host = host, port = port,
 			username = username, password = password,
-			authdb = db_name,
+			authdb = "admin",
 		}
 	)
 end
 
-function test_auth()
+local function test_auth()
 	local ok, err, ret
 	local c = mongo.client(
 		{
@@ -39,7 +44,7 @@ function test_auth()
 	assert(ok and ret and ret.n == 1, err)
 end
 
-function test_insert_without_index()
+local function test_insert_without_index()
 	local ok, err, ret
 	local c = _create_client()
 	local db = c[db_name]
@@ -54,7 +59,7 @@ function test_insert_without_index()
 	assert(ok and ret and ret.n == 1, err)
 end
 
-function test_insert_with_index()
+local function test_insert_with_index()
 	local ok, err, ret
 	local c = _create_client()
 	local db = c[db_name]
@@ -71,7 +76,7 @@ function test_insert_with_index()
 	assert(ok == false and string.find(err, "duplicate key error"))
 end
 
-function test_find_and_remove()
+local function test_find_and_remove()
 	local ok, err, ret
 	local c = _create_client()
 	local db = c[db_name]
@@ -79,10 +84,19 @@ function test_find_and_remove()
 	db.testcoll:dropIndex("*")
 	db.testcoll:drop()
 
+	local cursor = db.testcoll:find()
+	assert(cursor:hasNext() == false)
+
 	db.testcoll:ensureIndex({test_key = 1}, {test_key2 = -1}, {unique = true, name = "test_index"})
 
 	ok, err, ret = db.testcoll:safe_insert({test_key = 1, test_key2 = 1})
 	assert(ok and ret and ret.n == 1, err)
+
+	cursor = db.testcoll:find()
+	assert(cursor:hasNext() == true)
+	local v = cursor:next()
+	assert(v)
+	assert(v.test_key == 1)
 
 	ok, err, ret = db.testcoll:safe_insert({test_key = 1, test_key2 = 2})
 	assert(ok and ret and ret.n == 1, err)
@@ -108,7 +122,7 @@ function test_find_and_remove()
 	assert(ret == nil)
 end
 
-function test_runcommand()
+local function test_runcommand()
 	local ok, err, ret
 	local c = _create_client()
 	local db = c[db_name]
@@ -139,7 +153,7 @@ function test_runcommand()
 	assert(ret and ret.cursor.firstBatch[1].test_key2_total == 6)
 end
 
-function test_expire_index()
+local function test_expire_index()
 	local ok, err, ret
 	local c = _create_client()
 	local db = c[db_name]
@@ -186,6 +200,52 @@ local function test_safe_batch_insert()
 	assert(length == ret:count(), "test safe batch insert failed")
 end
 
+local function test_safe_batch_delete()
+	local ok, err, ret
+	local c = _create_client()
+	local db = c[db_name]
+
+	db.testcoll:drop()
+
+	local docs, length = {}, 10
+	for i = 1, length do
+		table.insert(docs, {test_key = i})
+	end
+
+	db.testcoll:safe_batch_insert(docs)
+
+	docs = {}
+	local del_num = 5
+	for i = 1, del_num do
+		table.insert(docs, {test_key = i})
+	end
+
+	db.testcoll:safe_batch_delete(docs)
+
+	local ret = db.testcoll:find()
+	assert((length - del_num) == ret:count(), "test safe batch delete failed")
+end
+
+local function test_safe_update()
+	local ok, err, ret
+	local c = _create_client()
+	local db = c[db_name]
+
+	db.testcoll:drop()
+
+	db.testcoll:safe_insert({test_key = 100, test_value = "hello mongo"})
+	
+	db.testcoll:ensureIndex({test_key = 1}, {unique = true, name = "test_key_index"})
+
+	local query = {test_key = 100}
+	local update = {test_value = "hi mongo"}
+	ok, err = db.testcoll:safe_update(query, {['$set'] = update})
+	assert(ok, err)
+
+	ret = db.testcoll:findOne(query)
+	assert(ret.test_value == "hi mongo")
+end
+
 skynet.start(function()
 	if username then
 		print("Test auth")
@@ -203,5 +263,9 @@ skynet.start(function()
 	test_expire_index()
 	print("test safe batch insert")
 	test_safe_batch_insert()
+	print("test safe batch delete")
+	test_safe_batch_delete()
+	print("test_safe_update")
+	test_safe_update()
 	print("mongodb test finish.");
 end)

@@ -233,7 +233,7 @@ static int luaB_auxwrap (lua_State *L) {
   if (r < 0) {
     int stat = lua_status(co);
     if (stat != LUA_OK && stat != LUA_YIELD)
-      lua_resetthread(co);  /* close variables in case of errors */
+      lua_closethread(co, L);  /* close variables in case of errors */
     if (lua_type(L, -1) == LUA_TSTRING) {  /* error object is a string? */
       luaL_where(L, 1);  /* add extra info, if available */
       lua_insert(L, -2);
@@ -521,14 +521,12 @@ snlua_signal(struct snlua *l, int signal) {
 	skynet_error(l->ctx, "recv a signal %d", signal);
 	if (signal == 0) {
 		if (ATOM_LOAD(&l->trap) == 0) {
-			int zero = 0;
 			// only one thread can set trap ( l->trap 0->1 )
-			if (!ATOM_CAS(&l->trap, zero, 1))
+			if (!ATOM_CAS(&l->trap, 0, 1))
 				return;
 			lua_sethook (l->activeL, signal_hook, LUA_MASKCOUNT, 1);
 			// finish set ( l->trap 1 -> -1 )
-			int one = 1;
-			ATOM_CAS(&l->trap, one, -1);
+			ATOM_CAS(&l->trap, 1, -1);
 		}
 	} else if (signal == 1) {
 		skynet_error(l->ctx, "Current Memory %.3fK", (float)l->mem / 1024);
