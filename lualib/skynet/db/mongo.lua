@@ -1,5 +1,7 @@
 local bson = require "bson"
-local socket = require "skynet.socket"
+
+require "skynet.socket"
+
 local socketchannel	= require "skynet.socketchannel"
 local skynet = require "skynet"
 local driver = require "skynet.mongo.driver"
@@ -12,6 +14,7 @@ local table = table
 local bson_encode =	bson.encode
 local bson_encode_order	= bson.encode_order
 local bson_decode =	bson.decode
+local bson_int64 = bson.int64
 local empty_bson = bson_encode {}
 
 local mongo	= {}
@@ -23,6 +26,11 @@ mongo.type = assert(bson.type)
 local mongo_cursor = {}
 local cursor_meta =	{
 	__index	= mongo_cursor,
+}
+
+local aggregate_cursor = {}
+local aggregate_cursor_meta = {
+	__index	= aggregate_cursor,
 }
 
 local mongo_client = {}
@@ -68,11 +76,9 @@ local collection_meta =	{
 local function dispatch_reply(so)
 	local len_reply	= so:read(4)
 	local reply	= so:read(driver.length(len_reply))
-	local result = { result	= {} }
-	local succ,	reply_id, document,	cursor_id, startfrom = driver.reply(reply, result.result)
+	local result = {}
+	local succ,	reply_id, document = driver.reply(reply)
 	result.document	= document
-	result.cursor_id = cursor_id
-	result.startfrom = startfrom
 	result.data	= reply
 	return reply_id, succ, result
 end
@@ -298,15 +304,35 @@ function mongo_db:runCommand(cmd,cmd_v,...)
 	local sock = conn.__sock
 	local bson_cmd
 	if not cmd_v then
-		bson_cmd = bson_encode_order(cmd,1)
+		-- ensure cmd remains in first place
+		bson_cmd = bson_encode_order(cmd,1, "$db", self.name)
 	else
-		bson_cmd = bson_encode_order(cmd,cmd_v,...)
+		bson_cmd = bson_encode_order(cmd,cmd_v, "$db", self.name, ...)
 	end
-	local pack = driver.query(request_id, 0, self.__cmd, 0,	1, bson_cmd)
+
+	local pack = driver.op_msg(request_id, 0, bson_cmd)
 	-- we must hold	req	(req.data),	because	req.document is	a lightuserdata, it's a	pointer	to the string (req.data)
 	local req =	sock:request(pack, request_id)
 	local doc =	req.document
 	return bson_decode(doc)
+end
+
+--- send command without response
+function mongo_db:send_command(cmd, cmd_v, ...)
+	local conn = self.connection
+	local request_id = conn:genId()
+	local sock = conn.__sock
+	local bson_cmd
+	if not cmd_v then
+		-- ensure cmd remains in first place
+		bson_cmd = bson_encode_order(cmd, 1, "$db", self.name, "writeConcern", {w=0})
+	else
+		bson_cmd = bson_encode_order(cmd, cmd_v, "$db", self.name, "writeConcern", {w=0}, ...)
+	end
+
+	local pack = driver.op_msg(request_id, 2, bson_cmd)
+	sock:request(pack)
+	return {ok=1} -- fake successful response
 end
 
 function mongo_db:getCollection(collection)
@@ -326,10 +352,7 @@ function mongo_collection:insert(doc)
 	if doc._id == nil then
 		doc._id	= bson.objectid()
 	end
-	local sock = self.connection.__sock
-	local pack = driver.insert(0, self.full_name, bson_encode(doc))
-	-- flags support 1:	ContinueOnError
-	sock:request(pack)
+	self.database:send_command("insert", self.name, "documents", {bson_encode(doc)})
 end
 
 local function werror(r)
@@ -353,6 +376,11 @@ function mongo_collection:safe_insert(doc)
 	return werror(r)
 end
 
+function mongo_collection:raw_safe_insert(doc)
+	local r = self.database:runCommand("insert", self.name, "documents", {doc})
+	return werror(r)
+end
+
 function mongo_collection:batch_insert(docs)
 	for	i=1,#docs do
 		if docs[i]._id == nil then
@@ -360,10 +388,11 @@ function mongo_collection:batch_insert(docs)
 		end
 		docs[i]	= bson_encode(docs[i])
 	end
-	local sock = self.connection.__sock
-	local pack = driver.insert(0, self.full_name, docs)
-	sock:request(pack)
+
+	self.database:send_command("insert", self.name, "documents", docs)
 end
+
+mongo_collection.insert_many = mongo_collection.batch_insert
 
 function mongo_collection:safe_batch_insert(docs)
 	for i = 1, #docs do
@@ -377,16 +406,20 @@ function mongo_collection:safe_batch_insert(docs)
 	return werror(r)
 end
 
-function mongo_collection:update(selector,update,upsert,multi)
-	local flags	= (upsert and 1	or 0) +	(multi and 2 or	0)
-	local sock = self.connection.__sock
-	local pack = driver.update(self.full_name, flags, bson_encode(selector), bson_encode(update))
-	sock:request(pack)
+mongo_collection.safe_insert_many = mongo_collection.safe_batch_insert
+
+function mongo_collection:update(query,update,upsert,multi)
+	self.database:send_command("update", self.name, "updates", {bson_encode({
+		q = query,
+		u = update,
+		upsert = upsert,
+		multi = multi
+	})})
 end
 
-function mongo_collection:safe_update(selector, update, upsert, multi)
+function mongo_collection:safe_update(query, update, upsert, multi)
 	local r = self.database:runCommand("update", self.name, "updates", {bson_encode({
-		q = selector,
+		q = query,
 		u = update,
 		upsert = upsert,
 		multi = multi,
@@ -394,44 +427,91 @@ function mongo_collection:safe_update(selector, update, upsert, multi)
 	return werror(r)
 end
 
-function mongo_collection:delete(selector, single)
-	local sock = self.connection.__sock
-	local pack = driver.delete(self.full_name, single, bson_encode(selector))
-	sock:request(pack)
+function mongo_collection:batch_update(updates)
+	local updates_tb = {}
+	for i = 1, #updates do
+		updates_tb[i] = bson_encode({
+			q = updates[i].query,
+			u = updates[i].update,
+			upsert = updates[i].upsert,
+			multi = updates[i].multi,
+		})
+	end
+
+	self.database:send_command("update", self.name, "updates", updates_tb)
 end
 
-function mongo_collection:safe_delete(selector, single)
+function mongo_collection:safe_batch_update(updates)
+	local updates_tb = {}
+	for i = 1, #updates do
+		updates_tb[i] = bson_encode({
+			q = updates[i].query,
+			u = updates[i].update,
+			upsert = updates[i].upsert,
+			multi = updates[i].multi,
+		})
+	end
+
+	local r = self.database:runCommand("update", self.name, "updates", updates_tb)
+	return werror(r)
+end
+
+function mongo_collection:raw_safe_update(update)
+	local r = self.database:runCommand("update", self.name, "updates", {update})
+	return werror(r)
+end
+
+function mongo_collection:delete(query, single)
+	self.database:send_command("delete", self.name, "deletes", {bson_encode({
+		q = query,
+		limit = single and 1 or 0,
+	})})
+end
+
+function mongo_collection:safe_delete(query, single)
 	local r = self.database:runCommand("delete", self.name, "deletes", {bson_encode({
-		q = selector,
+		q = query,
 		limit = single and 1 or 0,
 	})})
 	return werror(r)
 end
 
-function mongo_collection:findOne(query, selector)
-	local conn = self.connection
-	local request_id = conn:genId()
-	local sock = conn.__sock
-	local pack = driver.query(request_id, 0, self.full_name, 0,	1, query and bson_encode(query)	or empty_bson, selector	and	bson_encode(selector))
-	-- we must hold	req	(req.data),	because	req.document is	a lightuserdata, it's a	pointer	to the string (req.data)
-	local req =	sock:request(pack, request_id)
-	local doc =	req.document
-	return bson_decode(doc)
+function mongo_collection:safe_batch_delete(deletes, single)
+	local delete_tb = {}
+	for i = 1, #deletes do
+		delete_tb[i] = bson_encode({
+			q = deletes[i],
+			limit = single and 1 or 0,
+		})
+	end
+	local r = self.database:runCommand("delete", self.name, "deletes", delete_tb)
+	return werror(r)
 end
 
-function mongo_collection:find(query, selector)
+function mongo_collection:raw_safe_delete(delete)
+	local r = self.database:runCommand("delete", self.name, "deletes", {delete})
+	return werror(r)
+end
+
+function mongo_collection:findOne(query, projection)
+	local r = self.database:runCommand("find", self.name, "filter", query and bson_encode(query) or empty_bson,
+		"limit", 1, "projection", projection and bson_encode(projection) or empty_bson)
+	if r.ok ~= 1 then
+		error(r.errmsg or "Reply from mongod error")
+	end
+	return r.cursor.firstBatch[1]
+end
+
+function mongo_collection:find(query, projection)
 	return setmetatable( {
 		__collection = self,
 		__query	= query	and	bson_encode(query) or empty_bson,
-		__selector = selector and bson_encode(selector),
+		__projection = projection and bson_encode(projection) or empty_bson,
 		__ptr =	nil,
 		__data = nil,
 		__cursor = nil,
 		__document = {},
-		__flags	= 0,
-		__skip = 0,
-		__sortquery = nil,
-		__limit = 0,
+		__sort = empty_bson
 	} ,	cursor_meta)
 end
 
@@ -452,7 +532,7 @@ function mongo_cursor:sort(key, key_v, ...)
 		local key_list = unfold({}, key, key_v , ...)
 		key = bson_encode_order(table.unpack(key_list))
 	end
-	self.__sortquery = bson_encode {['$query'] = self.__query, ['$orderby'] = key}
+	self.__sort = key
 	return self
 end
 
@@ -466,20 +546,52 @@ function mongo_cursor:limit(amount)
 	return self
 end
 
-function mongo_cursor:count(with_limit_and_skip)
-	local cmd = {
-		'count', self.__collection.name,
-		'query', self.__query,
-	}
-	if with_limit_and_skip then
-		local len = #cmd
-		cmd[len+1] = 'limit'
-		cmd[len+2] = self.__limit
-		cmd[len+3] = 'skip'
-		cmd[len+4] = self.__skip
+function mongo_cursor:hint(indexName)
+	self.__hint = indexName
+	return self
+end
+
+function mongo_cursor:maxTimeMS(ms)
+	self.__maxTimeMS = ms
+	return self
+end
+
+local opt_func = {}
+
+local function opt_define(name)
+	local key = "__" .. name
+	opt_func[name] = function (self, ...)
+		local v = self[key]
+		if v ~= nil then
+			return name, v, ...
+		else
+			return ...
+		end
 	end
-	local ret = self.__collection.database:runCommand(table.unpack(cmd))
-	assert(ret and ret.ok == 1)
+end
+
+opt_define "skip"
+opt_define "limit"
+opt_define "hint"
+opt_define "maxTimeMS"
+
+local function add_opt(self, opt, ...)
+	if opt == nil then
+		return
+	end
+	return opt_func[opt](self, add_opt(self, ...))
+end
+
+function mongo_cursor:count(with_limit_and_skip)
+	local ret
+	if with_limit_and_skip then
+		ret = self.__collection.database:runCommand('count', self.__collection.name, 'query', self.__query,
+			add_opt(self, "skip", "limit", "hint", "maxTimeMS"))
+	else
+		ret = self.__collection.database:runCommand('count', self.__collection.name, 'query', self.__query,
+			add_opt(self, "hint", "maxTimeMS"))
+	end
+	assert(ret.ok == 1, ret.errmsg)
 	return ret.n
 end
 
@@ -583,21 +695,52 @@ function mongo_collection:findAndModify(doc)
 	return self.database:runCommand(table.unpack(cmd))
 end
 
+-- https://docs.mongodb.com/manual/reference/command/aggregate/
+-- collection:aggregate({ { ["$project"] = {tags = 1} } }, {cursor={}})
+-- @param pipeline: array
+-- @param options: map
+-- @return
+function mongo_collection:aggregate(pipeline, options)
+	assert(pipeline)
+	local options_cmd
+	if options then
+		options_cmd = {}
+		for k, v in pairs(options) do
+			table.insert(options_cmd, k)
+			table.insert(options_cmd, v)
+		end
+	end
+	local len = #pipeline
+	return setmetatable( {
+		__collection = self,
+		__pipeline =  table.move(pipeline, 1, len, 1, {}),
+		__pipeline_len = len,
+		__options = options_cmd,
+		__ptr =	nil,
+		__data = nil,
+		__cursor = nil,
+		__document = {},
+		__skip = 0,
+		__limit = 0,
+	} ,	aggregate_cursor_meta)
+end
+
 function mongo_cursor:hasNext()
 	if self.__ptr == nil then
 		if self.__document == nil then
 			return false
 		end
-		local conn = self.__collection.connection
-		local request_id = conn:genId()
-		local sock = conn.__sock
-		local pack
+		local response
+
+		local database = self.__collection.database
 		if self.__data == nil then
-			local query = self.__sortquery or self.__query
-			pack = driver.query(request_id, self.__flags, self.__collection.full_name, self.__skip, self.__limit, query, self.__selector)
+			local name = self.__collection.name
+			response = database:runCommand("find", name, "filter", self.__query, "sort", self.__sort,
+				"projection", self.__projection, add_opt(self, "skip", "limit", "hint", "maxTimeMS"))
 		else
-			if self.__cursor then
-				pack = driver.more(request_id, self.__collection.full_name, self.__limit, self.__cursor)
+			if self.__cursor  and self.__cursor > 0 then
+				local name = self.__collection.name
+				response = database:runCommand("getMore", bson_int64(self.__cursor), "collection", name)
 			else
 				-- no more
 				self.__document	= nil
@@ -606,45 +749,35 @@ function mongo_cursor:hasNext()
 			end
 		end
 
-		local ok, result = pcall(sock.request,sock,pack, request_id)
-
-		local doc =	result.document
-		local cursor = result.cursor_id
-
-		if ok then
-			if doc then
-				local doc = result.result
-				self.__document	= doc
-				self.__data	= result.data
-				self.__ptr = 1
-				self.__cursor =	cursor
-				local limit = self.__limit
-				if cursor and limit > 0 then
-					limit = limit - #doc
-					if limit <= 0 then
-						-- reach limit
-						self:close()
-					end
-					self.__limit = limit
-				end
-				return true
-			else
-				self.__document	= nil
-				self.__data	= nil
-				self.__cursor =	nil
-				return false
-			end
-		else
+		if response.ok ~= 1 then
 			self.__document	= nil
 			self.__data	= nil
 			self.__cursor =	nil
-			if doc then
-				local err =	bson_decode(doc)
-				error(err["$err"])
-			else
-				error("Reply from mongod error")
-			end
+			error(response["errmsg"] or "Reply from mongod error")
 		end
+
+		local cursor = response.cursor
+		self.__document = cursor.firstBatch or cursor.nextBatch
+		self.__data = response
+		self.__ptr = 1
+		self.__cursor = cursor.id
+
+		local limit = self.__limit
+		if limit and limit > 0 and cursor.id > 0 then
+			limit = limit - #self.__document
+			if limit <= 0 then
+				-- reach limit
+				self:close()
+			end
+
+			self.__limit = limit
+		end
+
+		if cursor.id == 0 and #self.__document == 0 then -- nomore
+			return false
+		end
+
+		return true
 	end
 
 	return true
@@ -654,7 +787,7 @@ function mongo_cursor:next()
 	if self.__ptr == nil then
 		error "Call	hasNext	first"
 	end
-	local r	= bson_decode(self.__document[self.__ptr])
+	local r	= self.__document[self.__ptr]
 	self.__ptr = self.__ptr	+ 1
 	if self.__ptr >	#self.__document then
 		self.__ptr = nil
@@ -664,12 +797,124 @@ function mongo_cursor:next()
 end
 
 function mongo_cursor:close()
-	if self.__cursor then
-		local sock = self.__collection.connection.__sock
-		local pack = driver.kill(self.__cursor)
-		sock:request(pack)
+	if self.__cursor and self.__cursor > 0 then
+		local coll = self.__collection
+		coll.database:send_command("killCursors", coll.name, "cursors", {bson_int64(self.__cursor)})
 		self.__cursor = nil
 	end
 end
+
+local sort_stage = { ["$sort"] = true }
+local skip_stage = { ["$skip"] = 0 }
+local limit_stage = { ["$limit"] = 0 }
+local count_stage = { ["$count"] = "__count" }
+local function format_pipeline(self, with_limit_and_skip, is_count)
+	local len = self.__pipeline_len
+	if self.__sort and not is_count then
+		len = len + 1
+		sort_stage["$sort"] = self.__sort
+		self.__pipeline[len] = sort_stage
+	end
+	if with_limit_and_skip then
+		if self.__skip > 0 then
+			len = len + 1
+			skip_stage["$skip"] = self.__skip
+			self.__pipeline[len] = skip_stage
+		end
+		if self.__limit > 0 then
+			len = len + 1
+			limit_stage["$limit"]  = self.__limit
+			self.__pipeline[len] = limit_stage
+		end
+	end
+	if is_count then
+		len = len + 1
+		self.__pipeline[len] = count_stage
+	end
+	for i = 1, 2 do self.__pipeline[len + i] = nil end
+	return self.__pipeline
+end
+
+function aggregate_cursor:count(with_limit_and_skip)
+	local ret
+	local name = self.__collection.name
+	local database = self.__collection.database
+	if self.__options then
+		ret = database:runCommand("aggregate", name, "pipeline", format_pipeline(self, with_limit_and_skip, true),
+			table.unpack(self.__options))
+	else
+		ret = database:runCommand("aggregate", name, "pipeline", format_pipeline(self, with_limit_and_skip, true),
+			"cursor", empty_bson)
+	end
+	if ret.ok ~= 1 then
+		error(ret["errmsg"] or "Reply from mongod error")
+	end
+	return ret.cursor.firstBatch[1].__count
+end
+
+function aggregate_cursor:hasNext()
+	if self.__ptr == nil then
+		if self.__document == nil then
+			return false
+		end
+		local ret
+		local name = self.__collection.name
+		local database = self.__collection.database
+		if self.__data == nil then
+			if self.__options then
+				ret = database:runCommand("aggregate", name, "pipeline", format_pipeline(self, true), table.unpack(self.__options))
+			else
+				ret = database:runCommand("aggregate", name, "pipeline", format_pipeline(self, true), "cursor", empty_bson)
+			end
+		else
+			if self.__cursor  and self.__cursor > 0 then
+				ret = database:runCommand("getMore", bson_int64(self.__cursor), "collection", name)
+			else
+				-- no more
+				self.__document	= nil
+				self.__data	= nil
+				return false
+			end
+		end
+
+		if ret.ok ~= 1 then
+			self.__document	= nil
+			self.__data	= nil
+			self.__cursor =	nil
+			error(ret["errmsg"] or "Reply from mongod error")
+		end
+
+		local cursor = ret.cursor
+		self.__document = cursor.firstBatch or cursor.nextBatch
+		self.__data = ret
+		self.__ptr = 1
+		self.__cursor = cursor.id
+
+		local limit = self.__limit
+		if cursor.id > 0 and limit > 0 then
+			limit = limit - #self.__document
+			if limit <= 0 then
+				-- reach limit
+				self:close()
+			end
+
+			self.__limit = limit
+		end
+
+		if cursor.id == 0 and #self.__document == 0 then -- nomore
+			return false
+		end
+
+		return true
+	end
+
+	return true
+end
+
+aggregate_cursor.sort =  mongo_cursor.sort
+aggregate_cursor.skip = mongo_cursor.skip
+aggregate_cursor.limit = mongo_cursor.limit
+aggregate_cursor.next = mongo_cursor.next
+aggregate_cursor.close = mongo_cursor.close
 
 return mongo

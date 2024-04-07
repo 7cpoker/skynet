@@ -5,9 +5,11 @@
 3rd/lua/lua
 3rd/lua/luac
 3rd/lua/*.o
+3rd/lua/all
 /cservice
 /luaclib
 *.so
 *.dSYM
 .DS_Store
 3rd/jemalloc
+.vscode

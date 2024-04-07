@@ -55,6 +55,8 @@ local function get_sender(node)
 	return s
 end
 
+cluster.get_sender = get_sender
+
 function cluster.call(node, address, ...)
 	-- skynet.pack(...) will free by cluster.core.packrequest
 	local s = sender[node]
@@ -75,11 +77,11 @@ function cluster.send(node, address, ...)
 	end
 end
 
-function cluster.open(port)
+function cluster.open(port, maxclient)
 	if type(port) == "string" then
-		skynet.call(clusterd, "lua", "listen", port)
+		return skynet.call(clusterd, "lua", "listen", port, nil, maxclient)
 	else
-		skynet.call(clusterd, "lua", "listen", "0.0.0.0", port)
+		return skynet.call(clusterd, "lua", "listen", "0.0.0.0", port, maxclient)
 	end
 end
 
@@ -104,6 +106,11 @@ function cluster.register(name, addr)
 	assert(type(name) == "string")
 	assert(addr == nil or type(addr) == "number")
 	return skynet.call(clusterd, "lua", "register", name, addr)
+end
+
+function cluster.unregister(name)
+	assert(type(name) == "string")
+	return skynet.call(clusterd, "lua", "unregister", name)
 end
 
 function cluster.query(node, name)

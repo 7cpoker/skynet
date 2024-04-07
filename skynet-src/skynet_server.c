@@ -10,7 +10,6 @@
 #include "skynet_monitor.h"
 #include "skynet_imp.h"
 #include "skynet_log.h"
-#include "skynet_timer.h"
 #include "spinlock.h"
 #include "atomic.h"
 
@@ -66,7 +65,7 @@ struct skynet_node {
 	int init;
 	uint32_t monitor_exit;
 	pthread_key_t handle_key;
-	bool profile;	// default is off
+	bool profile;	// default is on
 };
 
 static struct skynet_node G_NODE;
@@ -119,7 +118,7 @@ drop_message(struct skynet_message *msg, void *ud) {
 	uint32_t source = d->handle;
 	assert(source);
 	// report error to the message source
-	skynet_send(NULL, source, msg->source, PTYPE_ERROR, 0, NULL, 0);
+	skynet_send(NULL, source, msg->source, PTYPE_ERROR, msg->session, NULL, 0);
 }
 
 struct skynet_context * 
@@ -595,8 +594,7 @@ cmd_logon(struct skynet_context * context, const char * param) {
 	if (lastf == NULL) {
 		f = skynet_log_open(context, handle);
 		if (f) {
-			uintptr_t exp = 0;
-			if (!ATOM_CAS_POINTER(&ctx->logfile, exp, (uintptr_t)f)) {
+			if (!ATOM_CAS_POINTER(&ctx->logfile, 0, (uintptr_t)f)) {
 				// logfile opens in other thread, close this one.
 				fclose(f);
 			}
@@ -617,8 +615,7 @@ cmd_logoff(struct skynet_context * context, const char * param) {
 	FILE * f = (FILE *)ATOM_LOAD(&ctx->logfile);
 	if (f) {
 		// logfile may close in other thread
-		uintptr_t fptr = (uintptr_t)f;
-		if (ATOM_CAS_POINTER(&ctx->logfile, fptr, (uintptr_t)NULL)) {
+		if (ATOM_CAS_POINTER(&ctx->logfile, (uintptr_t)f, (uintptr_t)NULL)) {
 			skynet_log_close(context, f, handle);
 		}
 	}
